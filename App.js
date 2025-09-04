@@ -29,7 +29,7 @@
 // =============================
 // App.js
 // =============================
-import { SafeAreaView, StatusBar, StyleSheet, View } from "react-native";
+import { SafeAreaView, StatusBar, StyleSheet } from "react-native";
 import Header from "./src/components/Header";
 import Board from "./src/components/Board";
 import Controls from "./src/components/Controls";
@@ -44,7 +44,7 @@ export default function App() {
 			<StatusBar barStyle="light-content" />
 			<Header title={game.config.title} onReset={game.reset} />
 			<Board game={game} />
-			<Controls game={game} />
+			{/* <Controls game={game} /> */}
 			<Status game={game} />
 		</SafeAreaView>
 	);

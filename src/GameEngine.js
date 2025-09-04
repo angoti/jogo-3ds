@@ -1,75 +1,162 @@
 // =============================
 // src/GameEngine.js
 // =============================
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, useEffect } from "react";
 import { normalizar } from "./utils/normalizar";
 import items from "./data/items.palavras.json";
-import { imagens } from "./data/items.imagens";
 
-// === Memória 3x4 (6 pares) — apenas trocando as regras do engine ===
-// Mantemos a mesma API (useGame) e campos básicos de estado, mas agora:
-// - secret/masked passam a ser informativos
-// - guess(value) espera um índice da carta (0..11) em string ou número
-// - payload guarda o baralho e seleção atual
+// === Caça-Palavras (mini) 6x6 com 6 palavras (linhas/colunas; sem diagonal) ===
+// Mantém a mesma API (useGame) e troca apenas as regras.
+// Interação: toque em uma célula para marcar o INÍCIO; toque em outra na mesma
+// linha/coluna para marcar o FIM. O trecho selecionado é checado como palavra.
+
+const GRID = 6; // 6x6
+const NUM_WORDS = 6;
+
 const DEFAULT_CONFIG = {
-	title: "Memória 3×4",
+	title: "Caça-Palavras 6x6",
 	showHints: false,
 	difficulty: "normal",
-	maxErrors: 999, // não usamos para perder, apenas contamos erros
+	maxErrors: 999,
 };
 
-function shuffle(arr) {
-	const a = arr.slice();
-	for (let i = a.length - 1; i > 0; i--) {
-		const j = Math.floor(Math.random() * (i + 1));
-		[a[i], a[j]] = [a[j], a[i]];
+function randInt(n) {
+	return Math.floor(Math.random() * n);
+}
+function pickRandom(arr) {
+	return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// Gera letras A–Z
+function randLetter() {
+	const A = "A".charCodeAt(0);
+	return String.fromCharCode(A + randInt(26));
+}
+
+function toMatrixIndex(idx) {
+	return { r: Math.floor(idx / GRID), c: idx % GRID };
+}
+function toIndex(r, c) {
+	return r * GRID + c;
+}
+
+function cleanWord(w) {
+	return normalizar(String(w)).replace(/[^a-z]/g, "");
+}
+
+function chooseWords(all) {
+	// Seleciona até 6 palavras 3..6 letras, normalizadas
+	const pool = all.map(w => cleanWord(w)).filter(w => w.length >= 3 && w.length <= GRID);
+	// fallback simples caso dataset não tenha suficientes
+	const fallback = ["casa", "nota", "jogo", "rede", "dado", "code"];
+	const selected = [];
+	const used = new Set();
+	// const source = pool.length < 6 ? pool : fallback;
+	while (selected.length < NUM_WORDS) {
+		const w = pickRandom(fallback);
+		if (!used.has(w)) {
+			used.add(w);
+			selected.push(w);
+		} else if (pool.length === 0 && fallback.length === 0) {
+			break;
+		}
 	}
-	return a;
+	return selected.slice(0, NUM_WORDS);
+	// return [];
 }
 
-function criarValoresBase() {
-	return items.slice(0, 6).map(w => normalizar(String(w)) || "x");
-}
+function placeWords(words) {
+	// Tenta posicionar horizontal/verticalmente, permitindo cruzamentos compatíveis
+	const grid = Array(GRID * GRID).fill(null);
+	const placements = []; // { word, cells: number[] }
 
-function criarBaralho() {
-	const valores = criarValoresBase();
-	// cria pares
-	const deck = valores
-		.flatMap(v => [
-			{ value: v, id: v + "-a" },
-			{ value: v, id: v + "-b" },
-		])
-		.map((c, idx) => ({ ...c, idx, revealed: false, matched: false }));
-	return shuffle(deck).map((c, idx) => ({ ...c, idx }));
-}
+	function canPlaceAt(startR, startC, dr, dc, word) {
+		if (dr !== 0 && dc !== 0) return false; // sem diagonal
+		const cells = [];
+		for (let i = 0; i < word.length; i++) {
+			const r = startR + dr * i;
+			const c = startC + dc * i;
+			if (r < 0 || r >= GRID || c < 0 || c >= GRID) return false;
+			const idx = toIndex(r, c);
+			const existing = grid[idx];
+			if (existing && existing !== word[i].toUpperCase()) return false; // conflito
+			cells.push(idx);
+		}
+		return cells;
+	}
 
-function todosPareados(deck) {
-	return deck.every(c => c.matched);
+	for (const w of words) {
+		const W = w.toUpperCase();
+		let placed = false;
+		for (let attempt = 0; attempt < 200 && !placed; attempt++) {
+			const dir = Math.random() < 0.5 ? "H" : "V";
+			const dr = dir === "H" ? 0 : 1;
+			const dc = dir === "H" ? 1 : 0;
+			const maxR = dir === "H" ? GRID : GRID - W.length;
+			const maxC = dir === "H" ? GRID - W.length : GRID;
+			const r0 = Math.floor(Math.random() * maxR);
+			const c0 = Math.floor(Math.random() * maxC);
+			const cells = canPlaceAt(r0, c0, dr, dc, W);
+			if (cells) {
+				cells.forEach((idx, i) => {
+					grid[idx] = W[i];
+				});
+				placements.push({ word: w, norm: w, cells });
+				placed = true;
+			}
+		}
+		if (!placed) {
+			// fallback: coloca na primeira linha possível
+			const dr = 0;
+			const dc = 1;
+			const r0 = placements.length % GRID;
+			const c0 = 0;
+			const cells = [];
+			for (let i = 0; i < W.length && i < GRID; i++) {
+				const idx = toIndex(r0, c0 + i);
+				grid[idx] = W[i];
+				cells.push(idx);
+			}
+			placements.push({ word: w, norm: w, cells });
+		}
+	}
+
+	// Preenche vazios com letras aleatórias
+	for (let i = 0; i < grid.length; i++) {
+		if (!grid[i]) grid[i] = randLetter();
+	}
+
+	return { letters: grid, placements };
 }
 
 export default function useGame() {
 	const [config, setConfigState] = useState(DEFAULT_CONFIG);
-	// const dataset = useMemo(() => items, []);
+	const dataset = useMemo(() => items, []);
 	// const listaDeImagens = useMemo(() => imagens, []);
 
 	const buildInitialState = useCallback(() => {
-		const deck = criarBaralho();
+		const chosen = chooseWords(dataset);
+		const { letters, placements } = placeWords(chosen);
 		return {
-			secret: "memoria-3x4",
-			masked: "0/6 pares",
+			secret: "caca-palavras-6x6",
+			masked: `0/${NUM_WORDS} palavras`,
 			usedInputs: [],
 			score: 0,
 			errors: 0,
 			status: "idle",
 			payload: {
-				deck,
-				firstIndex: null, // índice da primeira carta selecionada
+				grid: letters, // Array(36) de letras maiúsculas
+				placements, // lista de palavras e suas células
+				found: Array(placements.length).fill(false),
+				foundCells: Array(letters.length).fill(false),
+				firstIndex: null,
 				lock: false,
-				pairs: 6,
 			},
 		};
-	}, []);
+	}, [dataset]);
+
 	const [state, setState] = useState(() => buildInitialState());
+
 	const start = useCallback(() => {
 		setState(prev => ({ ...prev, status: "playing" }));
 	}, []);
@@ -77,12 +164,32 @@ export default function useGame() {
 	const reset = useCallback(() => {
 		setState(buildInitialState());
 		start();
-	}, [buildInitialState]);
+	}, [buildInitialState, start]);
 
-	const atualizarMaskedEScore = (deck, errors, prevScore) => {
-		const pareados = deck.filter(c => c.matched).length / 2;
-		const masked = `${pareados}/6 pares`;
-		const score = Math.max(0, pareados * 20 - errors * 2);
+	function computePath(a, b) {
+		const A = toMatrixIndex(a);
+		const B = toMatrixIndex(b);
+		if (A.r === B.r) {
+			const c1 = Math.min(A.c, B.c),
+				c2 = Math.max(A.c, B.c);
+			const cells = [];
+			for (let c = c1; c <= c2; c++) cells.push(toIndex(A.r, c));
+			return cells;
+		}
+		if (A.c === B.c) {
+			const r1 = Math.min(A.r, B.r),
+				r2 = Math.max(A.r, B.r);
+			const cells = [];
+			for (let r = r1; r <= r2; r++) cells.push(toIndex(r, A.c));
+			return cells;
+		}
+		return null; // não é linha/coluna reta
+	}
+
+	const atualizarMaskedEScore = (foundArr, errors) => {
+		const count = foundArr.filter(Boolean).length;
+		const masked = `${count}/${NUM_WORDS} palavras`;
+		const score = Math.max(0, count * 10 - errors * 1);
 		return { masked, score };
 	};
 
@@ -93,62 +200,77 @@ export default function useGame() {
 			if (Number.isNaN(idx)) return;
 
 			const payload = state.payload || {};
-			const deck = (payload.deck || []).slice();
-			if (!deck[idx] || deck[idx].matched || deck[idx].revealed) return;
+			const { firstIndex } = payload;
 			if (payload.lock) return;
-			// Revela a carta clicada
-			deck[idx] = { ...deck[idx], revealed: true };
-			// Se não há primeira seleção, apenas marca e sai
-			if (payload.firstIndex === null) {
-				const { masked, score } = atualizarMaskedEScore(deck, state.errors, state.score);
-				setState(prev => ({
-					...prev,
-					masked,
-					score,
-					payload: { ...prev.payload, deck, firstIndex: idx },
-				}));
+
+			if (firstIndex === null) {
+				setState(prev => ({ ...prev, payload: { ...prev.payload, firstIndex: idx } }));
 				return;
 			}
 
-			// Há primeira seleção: comparar
-			const i = payload.firstIndex;
-			const sameValue = deck[i].value === deck[idx].value;
-			if (sameValue) {
-				deck[i] = { ...deck[i], matched: true };
-				deck[idx] = { ...deck[idx], matched: true };
-				const { masked, score } = atualizarMaskedEScore(deck, state.errors);
-				let status = state.status;
-				if (todosPareados(deck)) status = "won";
-				setState(prev => ({
-					...prev,
-					masked,
-					score,
-					status,
-					payload: { ...prev.payload, deck, firstIndex: null, lock: false },
-				}));
-				return;
-			}
-			// Não é par: mantém as duas reveladas por 1s e depois vira de volta
-			setState(prev => ({
-				...prev,
-				payload: { ...prev.payload, deck, firstIndex: i, lock: true },
-			}));
-
-			setTimeout(() => {
-				const deckAfter = deck.slice();
-				deckAfter[i] = { ...deckAfter[i], revealed: false };
-				deckAfter[idx] = { ...deckAfter[idx], revealed: false };
+			// Temos início e fim: calcula caminho
+			const path = computePath(firstIndex, idx);
+			if (!path) {
+				// seleção inválida
 				const errors = state.errors + 1;
-				const { masked, score } = atualizarMaskedEScore(deckAfter, errors);
+				const { masked, score } = atualizarMaskedEScore(payload.found, errors);
 				setState(prev => ({
 					...prev,
 					errors,
 					masked,
 					score,
-					payload: { ...prev.payload, deck: deckAfter, firstIndex: null, lock: false },
+					payload: { ...prev.payload, firstIndex: null },
 				}));
-			}, 1000);
-			
+				return;
+			}
+
+			const str = path.map(i => payload.grid[i]).join(""); // maiúsculas
+			const norm = normalizar(str).toLowerCase();
+			const normRev = normalizar(str.split("").reverse().join("")).toLowerCase();
+
+			// Procura palavra que case exatamente com o trecho
+			let foundIndex = -1;
+			for (let i = 0; i < payload.placements.length; i++) {
+				if (payload.found[i]) continue;
+				const target = cleanWord(payload.placements[i].word).toLowerCase();
+				if (target === norm || target === normRev) {
+					foundIndex = i;
+					break;
+				}
+			}
+
+			if (foundIndex >= 0) {
+				// Marca palavra como encontrada e pinta células
+				const found = payload.found.slice();
+				found[foundIndex] = true;
+				const foundCells = payload.foundCells.slice();
+				path.forEach(p => {
+					foundCells[p] = true;
+				});
+				const { masked, score } = atualizarMaskedEScore(found, state.errors);
+
+				let status = state.status;
+				if (found.every(Boolean)) status = "won";
+
+				setState(prev => ({
+					...prev,
+					masked,
+					score,
+					status,
+					payload: { ...prev.payload, found, foundCells, firstIndex: null },
+				}));
+				return;
+			}
+			// Não encontrou
+			const errors = state.errors + 1;
+			const { masked, score } = atualizarMaskedEScore(payload.found, errors);
+			setState(prev => ({
+				...prev,
+				errors,
+				masked,
+				score,
+				payload: { ...prev.payload, firstIndex: null },
+			}));
 		},
 		[state]
 	);
