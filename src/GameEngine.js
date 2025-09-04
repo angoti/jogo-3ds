@@ -6,109 +6,157 @@ import { normalizar } from "./utils/normalizar";
 import items from "./data/items.palavras.json";
 import { imagens } from "./data/items.imagens";
 
+// === Memória 3x4 (6 pares) — apenas trocando as regras do engine ===
+// Mantemos a mesma API (useGame) e campos básicos de estado, mas agora:
+// - secret/masked passam a ser informativos
+// - guess(value) espera um índice da carta (0..11) em string ou número
+// - payload guarda o baralho e seleção atual
 const DEFAULT_CONFIG = {
-	title: "Jogo-Base",
+	title: "Memória 3×4",
 	showHints: false,
 	difficulty: "normal",
-	maxErrors: 6,
+	maxErrors: 999, // não usamos para perder, apenas contamos erros
 };
 
-function sortear(arr) {
-	return arr[Math.floor(Math.random() * arr.length)];
+function shuffle(arr) {
+	const a = arr.slice();
+	for (let i = a.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1));
+		[a[i], a[j]] = [a[j], a[i]];
+	}
+	return a;
 }
 
-function maskSecret(secret, usedInputs) {
-	const set = new Set(usedInputs.map(normalizar));
-	return secret
-		.split("")
-		.map(ch => (set.has(normalizar(ch)) ? ch : "_"))
-		.join(" ");
+function criarValoresBase() {
+	return items.slice(0, 6).map(w => normalizar(String(w)) || "x");
 }
 
-function allRevealed(masked) {
-	return !masked.includes("_");
+function criarBaralho() {
+	const valores = criarValoresBase();
+	// cria pares
+	const deck = valores
+		.flatMap(v => [
+			{ value: v, id: v + "-a" },
+			{ value: v, id: v + "-b" },
+		])
+		.map((c, idx) => ({ ...c, idx, revealed: false, matched: false }));
+	return shuffle(deck).map((c, idx) => ({ ...c, idx }));
+}
+
+function todosPareados(deck) {
+	return deck.every(c => c.matched);
 }
 
 export default function useGame() {
 	const [config, setConfigState] = useState(DEFAULT_CONFIG);
-	const dataset = useMemo(() => items, []);
-	const listaDeImagens = useMemo(() => imagens, []);
+	// const dataset = useMemo(() => items, []);
+	// const listaDeImagens = useMemo(() => imagens, []);
 
-  const buildInitialState = useCallback(() => {
-    console.log("building initial state...");
-		const raw = String(sortear(dataset));
-		const secret = raw;
-		const masked = maskSecret(secret, []);
+	const buildInitialState = useCallback(() => {
+		const deck = criarBaralho();
 		return {
-			secret,
-			masked,
+			secret: "memoria-3x4",
+			masked: "0/6 pares",
 			usedInputs: [],
 			score: 0,
 			errors: 0,
 			status: "idle",
-			imagem: listaDeImagens[0],
+			payload: {
+				deck,
+				firstIndex: null, // índice da primeira carta selecionada
+				lock: false,
+				pairs: 6,
+			},
 		};
-	}, [dataset, listaDeImagens]);
-
-	const [state, setState] = useState(buildInitialState());
-
+	}, []);
+	const [state, setState] = useState(() => buildInitialState());
 	const start = useCallback(() => {
 		setState(prev => ({ ...prev, status: "playing" }));
 	}, []);
 
-  const reset = useCallback(() => {
-    console.log("resetting game...");
-    setState(buildInitialState());
-    start();
-  }, [buildInitialState]);
+	const reset = useCallback(() => {
+		setState(buildInitialState());
+		start();
+	}, [buildInitialState]);
+
+	const atualizarMaskedEScore = (deck, errors, prevScore) => {
+		const pareados = deck.filter(c => c.matched).length / 2;
+		const masked = `${pareados}/6 pares`;
+		const score = Math.max(0, pareados * 20 - errors * 2);
+		return { masked, score };
+	};
 
 	const guess = useCallback(
-    value => {
-      console.log("guessing:", value);
+		raw => {
 			if (state.status !== "playing") return;
+			const idx = typeof raw === "number" ? raw : parseInt(String(raw), 10);
+			if (Number.isNaN(idx)) return;
 
-			const v = normalizar(value).slice(0, 1);
-			if (!v) return;
-
-			if (state.usedInputs.map(normalizar).includes(v)) {
+			const payload = state.payload || {};
+			const deck = (payload.deck || []).slice();
+			if (!deck[idx] || deck[idx].matched || deck[idx].revealed) return;
+			if (payload.lock) return;
+			// Revela a carta clicada
+			deck[idx] = { ...deck[idx], revealed: true };
+			// Se não há primeira seleção, apenas marca e sai
+			if (payload.firstIndex === null) {
+				const { masked, score } = atualizarMaskedEScore(deck, state.errors, state.score);
+				setState(prev => ({
+					...prev,
+					masked,
+					score,
+					payload: { ...prev.payload, deck, firstIndex: idx },
+				}));
 				return;
 			}
 
-			const usedInputs = [...state.usedInputs, v];
-			const normalizedSecret = normalizar(state.secret);
-			const isHit = normalizedSecret.includes(v);
-
-			const masked = maskSecret(state.secret, usedInputs);
-			const errors = state.errors + (isHit ? 0 : 1);
-
-			let status = state.status;
-			if (allRevealed(masked)) status = "won";
-			else if (errors >= (config.maxErrors ?? 6)) status = "lost";
-
-			const scoreDelta = isHit ? 10 : -2;
-
+			// Há primeira seleção: comparar
+			const i = payload.firstIndex;
+			const sameValue = deck[i].value === deck[idx].value;
+			if (sameValue) {
+				deck[i] = { ...deck[i], matched: true };
+				deck[idx] = { ...deck[idx], matched: true };
+				const { masked, score } = atualizarMaskedEScore(deck, state.errors);
+				let status = state.status;
+				if (todosPareados(deck)) status = "won";
+				setState(prev => ({
+					...prev,
+					masked,
+					score,
+					status,
+					payload: { ...prev.payload, deck, firstIndex: null, lock: false },
+				}));
+				return;
+			}
+			// Não é par: mantém as duas reveladas por 1s e depois vira de volta
 			setState(prev => ({
 				...prev,
-				usedInputs,
-				masked,
-				errors,
-				status,
-				score: Math.max(0, prev.score + scoreDelta),
-				imagem: listaDeImagens[errors],
+				payload: { ...prev.payload, deck, firstIndex: i, lock: true },
 			}));
+
+			setTimeout(() => {
+				const deckAfter = deck.slice();
+				deckAfter[i] = { ...deckAfter[i], revealed: false };
+				deckAfter[idx] = { ...deckAfter[idx], revealed: false };
+				const errors = state.errors + 1;
+				const { masked, score } = atualizarMaskedEScore(deckAfter, errors);
+				setState(prev => ({
+					...prev,
+					errors,
+					masked,
+					score,
+					payload: { ...prev.payload, deck: deckAfter, firstIndex: null, lock: false },
+				}));
+			}, 1000);
+			
 		},
-		[state, config.maxErrors]
+		[state]
 	);
 
 	const hint = useCallback(() => {
-		if (!config.showHints || state.status !== "playing") return;
-		const normalizedSecret = normalizar(state.secret);
-		const used = new Set(state.usedInputs);
-		const candidates = Array.from(new Set(normalizedSecret.split(""))).filter(c => !used.has(c));
-		if (candidates.length === 0) return;
-		const chosen = sortear(candidates);
-		guess(chosen);
-	}, [config.showHints, state.status, state.secret, state.usedInputs, guess]);
+		// Opcional: revelar uma dica rápida (não implementado por padrão)
+		return;
+	}, []);
 
 	const setConfig = useCallback(partial => {
 		setConfigState(prev => ({ ...prev, ...partial }));

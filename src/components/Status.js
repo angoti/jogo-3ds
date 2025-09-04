@@ -1,11 +1,8 @@
-// =============================
-// src/components/Status.js
-// =============================
 import { View, Text, StyleSheet } from "react-native";
 
 export default function Status({ game }) {
 	const { status, errors, usedInputs, score } = game.state;
-	const max = game.config.maxErrors ?? 6;
+	const max = game.config.maxErrors || 6;
 
 	return (
 		<View style={styles.container}>
